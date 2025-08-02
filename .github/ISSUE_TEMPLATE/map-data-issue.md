@@ -3,7 +3,7 @@ name: Map Data Issue
 about: Report missing locations, incorrect location, name, description, tags, whatever
   is wrong with a map marker on Monomaps.
 title: ''
-labels: ''
+labels: Map Data Issue
 assignees: Jetaime-Alexandria
 
 ---
