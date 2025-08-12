@@ -1,0 +1,101 @@
+name: Close Sub-Issues on Parent Close
+
+on:
+  issues:
+    types: [closed]
+
+permissions:
+  issues: write
+
+jobs:
+  close_sub_issues:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Get Sub-Issues
+        id: get_sub_issues
+        env:
+          GITHUB_TOKEN: $
+        run: |
+          sudo apt-get update && sudo apt-get install -y jq curl
+          
+          page=1
+          sub_issues=()
+          while :; do
+            response=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$/issues/$/sub_issues?page=$page")
+            
+            if [ "$(echo "$response" | jq length)" -eq 0 ]; then
+              echo "No more sub-issues found on page $page."
+              break
+            fi
+
+            new_sub_issues=$(echo "$response" | jq -r '.[] | select(.number) | .number')
+            
+            if [ -z "$new_sub_issues" ]; then
+              echo "No sub-issues found on page $page."
+              break
+            fi
+
+            for issue in $new_sub_issues; do
+              sub_issues+=("$issue")
+            done
+
+            ((page++))
+          done
+
+          if [ ${#sub_issues[@]} -eq 0 ]; then
+            echo "No sub-issues found."
+            echo "HAS_SUB_ISSUES=false" >> "$GITHUB_ENV"
+          else
+            echo "Sub-issues found: ${sub_issues[*]}"
+            echo "SUB_ISSUES<<EOF" >> "$GITHUB_ENV"
+            printf "%s " "${sub_issues[@]}" >> "$GITHUB_ENV"
+            echo "" >> "$GITHUB_ENV"
+            echo "EOF" >> "$GITHUB_ENV"
+            echo "HAS_SUB_ISSUES=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: Close Sub-Issues
+        if: env.HAS_SUB_ISSUES == 'true'
+        env:
+          GITHUB_TOKEN: $
+        run: |
+          closed_issues=""
+          for issue_number in $SUB_ISSUES; do
+            echo "Closing sub-issue #$issue_number..."
+
+            response=$(curl -s -w "\n%{http_code}" -X PATCH -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -d '{"state": "closed"}' \
+              "https://api.github.com/repos/$/issues/$issue_number")
+
+            http_code=$(echo "$response" | tail -n1)
+            body=$(echo "$response" | sed '$d')
+
+            if [ "$http_code" -eq 200 ]; then
+              echo "Sub-issue #$issue_number closed successfully."
+              closed_issues="$closed_issues #$issue_number"
+            else
+              echo "Failed to close sub-issue #$issue_number (HTTP $http_code): $body"
+            fi
+          done
+
+          echo "CLOSED_ISSUES<<EOF" >> "$GITHUB_ENV"
+          echo "$closed_issues" >> "$GITHUB_ENV"
+          echo "EOF" >> "$GITHUB_ENV"
+
+      - name: Comment on Parent Issue
+        if: env.HAS_SUB_ISSUES == 'true' && env.CLOSED_ISSUES != ''
+        env:
+          GITHUB_TOKEN: $
+        run: |
+          if [ -n "$CLOSED_ISSUES" ]; then
+            body="✅ Automatically closed the following sub-issues:$CLOSED_ISSUES"
+            curl -s -X POST -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -d "$(jq -nc --arg body "$body" '{"body": $body}')" \
+              "https://api.github.com/repos/$/issues/$/comments"
+          fi
